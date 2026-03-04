@@ -21,6 +21,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache: true
 
       - name: Verify dependencies
         run: go mod verify
@@ -29,7 +30,7 @@ jobs:
         run: go vet ./...
 
       - name: Test with race detector
-        run: go test -race -count=1 -coverprofile=coverage.txt ./...
+        run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.txt -coverpkg=./... ./...
 
       - name: Check coverage threshold
         run: |
