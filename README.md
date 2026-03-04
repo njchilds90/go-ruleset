@@ -140,7 +140,9 @@ result, err := e.Eval(ctx, facts)
 ### `EvalFirst` — first passing rule (switch-style)
 ```go
 rr, ok, err := e.EvalFirst(ctx, facts)
-if ok {
+if err != nil {
+    // handle error (e.g. context timeout)
+} else if ok {
     fmt.Println("Fired:", rr.RuleName)
     fmt.Println("Actions:", rr.Actions)
 }
