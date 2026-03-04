@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ─── Operator ────────────────────────────────────────────────────────────────
@@ -84,13 +85,13 @@ type Priority int
 //	Condition{Fact: "user.age", Operator: OpGte, Value: 18}
 type Condition struct {
 	// Fact is the key path into the facts map. Supports dot notation: "user.role".
-	Fact string `json:"fact"`
+	Fact string `json:"fact"` 
 	// Operator is the comparison to apply.
-	Operator Operator `json:"operator"`
+	Operator Operator `json:"operator"` 
 	// Value is the right-hand side of the comparison.
 	// For OpExists/OpNotExists, Value is ignored.
 	// For OpIn/OpNotIn, Value must be a []any or []string or []float64.
-	Value any `json:"value"`
+	Value any `json:"value"` 
 }
 
 // ─── Action ──────────────────────────────────────────────────────────────────
@@ -103,9 +104,9 @@ type Condition struct {
 //	Action{Type: "grant_access", Params: map[string]any{"role": "admin"}}
 type Action struct {
 	// Type is a machine-readable label for what should happen.
-	Type string `json:"type"`
+	Type string `json:"type"` 
 	// Params carries structured data relevant to the action.
-	Params map[string]any `json:"params,omitempty"`
+	Params map[string]any `json:"params,omitempty"` 
 }
 
 // ─── Rule ────────────────────────────────────────────────────────────────────
@@ -123,15 +124,15 @@ type Action struct {
 //	}
 type Rule struct {
 	// Name is a human-readable identifier for the rule.
-	Name string `json:"name"`
+	Name string `json:"name"` 
 	// Priority controls evaluation order. Higher = earlier. Default 0.
-	Priority Priority `json:"priority,omitempty"`
+	Priority Priority `json:"priority,omitempty"` 
 	// Logic determines how Conditions are combined. Defaults to LogicAll.
-	Logic Logic `json:"logic,omitempty"`
+	Logic Logic `json:"logic,omitempty"` 
 	// Conditions is the set of predicates to evaluate.
-	Conditions []Condition `json:"conditions"`
+	Conditions []Condition `json:"conditions"` 
 	// Actions is the set of structured outcomes produced when conditions pass.
-	Actions []Action `json:"actions"`
+	Actions []Action `json:"actions"` 
 }
 
 // ─── RuleResult ──────────────────────────────────────────────────────────────
@@ -139,37 +140,37 @@ type Rule struct {
 // RuleResult is the outcome of evaluating a single Rule.
 type RuleResult struct {
 	// RuleName is the name of the evaluated rule.
-	RuleName string `json:"rule_name"`
+	RuleName string `json:"rule_name"` 
 	// Passed is true if the rule's conditions were satisfied.
-	Passed bool `json:"passed"`
+	Passed bool `json:"passed"` 
 	// Actions contains the rule's actions, populated only when Passed is true.
-	Actions []Action `json:"actions,omitempty"`
+	Actions []Action `json:"actions,omitempty"` 
 	// ConditionResults is a per-condition trace, useful for debugging and AI agents.
-	ConditionResults []ConditionResult `json:"condition_results"`
+	ConditionResults []ConditionResult `json:"condition_results"` 
 }
 
 // ConditionResult is the per-condition evaluation trace within a RuleResult.
 type ConditionResult struct {
 	// Fact is the key path that was looked up.
-	Fact string `json:"fact"`
+	Fact string `json:"fact"` 
 	// Operator is the operator that was applied.
-	Operator Operator `json:"operator"`
+	Operator Operator `json:"operator"` 
 	// ExpectedValue is the right-hand side of the condition.
-	ExpectedValue any `json:"expected_value"`
+	ExpectedValue any `json:"expected_value"` 
 	// ActualValue is what was found in the facts map.
-	ActualValue any `json:"actual_value"`
+	ActualValue any `json:"actual_value"` 
 	// Passed is true if this individual condition was satisfied.
-	Passed bool `json:"passed"`
+	Passed bool `json:"passed"` 
 }
 
 // EvalResult is the aggregate result of evaluating all rules in an Engine against a facts map.
 type EvalResult struct {
 	// PassedRules contains all rules whose conditions were satisfied.
-	PassedRules []RuleResult `json:"passed_rules"`
+	PassedRules []RuleResult `json:"passed_rules"` 
 	// FailedRules contains all rules whose conditions were not satisfied.
-	FailedRules []RuleResult `json:"failed_rules"`
+	FailedRules []RuleResult `json:"failed_rules"` 
 	// Actions is the flattened union of all actions from PassedRules, in priority order.
-	Actions []Action `json:"actions"`
+	Actions []Action `json:"actions"` 
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -210,8 +211,7 @@ var ErrContextCanceled = errors.New("go-ruleset: evaluation canceled by context"
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
 // Engine holds a collection of Rules and evaluates them against a facts map.
-// Engine is safe for concurrent reads after all rules are added.
-// Do not add rules to an Engine that is actively being evaluated concurrently.
+// Engine is safe for concurrent access.
 //
 // Example:
 //
@@ -223,6 +223,7 @@ var ErrContextCanceled = errors.New("go-ruleset: evaluation canceled by context"
 //	})
 //	result, _ := e.Eval(context.Background(), ruleset.Facts{"age": 21})
 type Engine struct {
+	mu    sync.RWMutex
 	rules []Rule
 	names map[string]struct{}
 }
@@ -250,6 +251,8 @@ func (e *Engine) AddRule(r Rule) error {
 	if r.Name == "" {
 		return ErrEmptyRuleName
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if _, exists := e.names[r.Name]; exists {
 		return &ErrDuplicateRule{Name: r.Name}
 	}
@@ -278,6 +281,8 @@ func (e *Engine) MustAddRule(r Rule) {
 
 // Rules returns a copy of the Engine's rules in evaluation order (highest priority first).
 func (e *Engine) Rules() []Rule {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	cp := make([]Rule, len(e.rules))
 	copy(cp, e.rules)
 	return cp
@@ -285,6 +290,8 @@ func (e *Engine) Rules() []Rule {
 
 // RemoveRule removes a rule by name. Returns false if not found.
 func (e *Engine) RemoveRule(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	for i, r := range e.rules {
 		if r.Name == name {
 			e.rules = append(e.rules[:i], e.rules[i+1:]...)
@@ -319,11 +326,16 @@ type Facts map[string]any
 //	fmt.Println(result.Actions)
 func (e *Engine) Eval(ctx context.Context, facts Facts) (EvalResult, error) {
 	var res EvalResult
-	for _, rule := range e.rules {
+	e.mu.RLock()
+	rules := make([]Rule, len(e.rules))
+	copy(rules, e.rules)
+	e.mu.RUnlock()
+
+	for _, rule := range rules {
 		select {
 		case <-ctx.Done():
 			return EvalResult{}, ErrContextCanceled
-		default:
+		default: 
 		}
 		rr, err := evalRule(rule, facts)
 		if err != nil {
@@ -346,11 +358,16 @@ func (e *Engine) Eval(ctx context.Context, facts Facts) (EvalResult, error) {
 //
 //	rr, ok, err := e.EvalFirst(context.Background(), ruleset.Facts{"tier": "gold"})
 func (e *Engine) EvalFirst(ctx context.Context, facts Facts) (RuleResult, bool, error) {
-	for _, rule := range e.rules {
+	e.mu.RLock()
+	rules := make([]Rule, len(e.rules))
+	copy(rules, e.rules)
+	e.mu.RUnlock()
+
+	for _, rule := range rules {
 		select {
 		case <-ctx.Done():
 			return RuleResult{}, false, ErrContextCanceled
-		default:
+		default: 
 		}
 		rr, err := evalRule(rule, facts)
 		if err != nil {
@@ -390,7 +407,7 @@ func evalRule(rule Rule, facts Facts) (RuleResult, error) {
 		rr.Passed = allPassed(condResults)
 	case LogicAny:
 		rr.Passed = anyPassed(condResults)
-	default:
+	default: 
 		return RuleResult{}, &ErrInvalidLogic{Logic: rule.Logic}
 	}
 
@@ -424,7 +441,7 @@ func evalCondition(op Operator, actual, expected any) (bool, error) {
 		return !ok, err
 	case OpMatches:
 		return matchesCheck(actual, expected)
-	default:
+	default: 
 		return false, &ErrInvalidOperator{Operator: op}
 	}
 }
@@ -447,10 +464,14 @@ func lookupFact(facts Facts, path string) any {
 				return nil
 			}
 			cur = v
-		default:
+		default: 
 			rv := reflect.ValueOf(cur)
 			if rv.Kind() == reflect.Map {
-				v := rv.MapIndex(reflect.ValueOf(part))
+				kv := reflect.ValueOf(part)
+				if !kv.Type().AssignableTo(rv.Type().Key()) {
+					return nil
+				}
+				v := rv.MapIndex(kv)
 				if !v.IsValid() {
 					return nil
 				}
@@ -610,7 +631,7 @@ func validateRule(r Rule) error {
 		case OpEq, OpNeq, OpLt, OpLte, OpGt, OpGte, OpContains, OpNotContains,
 			OpIn, OpNotIn, OpMatches, OpExists, OpNotExists:
 			// valid
-		default:
+		default: 
 			return &ErrInvalidOperator{Operator: c.Operator}
 		}
 	}
